@@ -7,7 +7,7 @@
  Ugly lawyer stuff:   
  BASSWOOD ASSOCIATES MAKES NO REPRESENTATIONS OR WARRANTIES THAT THE SOFTWARE IS
  FREE OF ERRORS OR THAT THE SOFTWARE IS SUITABLE FOR YOUR USE.  THE SOFTWARE IS
- PROVIDED ON AN "AS IS" BASIS.  3COM MAKES NO WARRANTIES, TERMS OR CONDITIONS, 
+ PROVIDED ON AN "AS IS" BASIS.  BASSWOOD MAKES NO WARRANTIES, TERMS OR CONDITIONS, 
  EXPRESS OR IMPLIED, EITHER IN FACT OR BY OPERATION OF LAW, STATUTORY OR OTHERWISE,
  INCLUDING WARRANTIES, TERMS, OR CONDITIONS OF MERCHANTABILITY, FITNESS FOR A
  PARTICULAR PURPOSE, AND SATISFACTORY QUALITY.
@@ -25,6 +25,7 @@
  * PROJECT:  8queens
  * FILE:     8queens.c
  * AUTHOR:   Tom Shields, Dec 15, 1998
+ * $Id: 8queens.c,v 1.3 1999/01/06 11:43:18 ts Exp $
  *
  * DECLARER: 8queens
  *
@@ -54,7 +55,8 @@
  ***********************************************************************/
 static GridType         curGrid, blinkGrid;
 static OpenGridType     findGrid;
-Boolean                 someReversed;
+Int                     numPlaced, numReversed;
+Boolean                 whiteUpperLeft;
 
 static WinHandle  OffscreenGridWinH = 0;
 static WinHandle  OffscreenBitmapWinH = 0;
@@ -113,13 +115,59 @@ static Err RomVersionCompatible (DWord requiredVersion, Word launchFlags)
   if (romVersion < requiredVersion) {
     if ((launchFlags & (sysAppLaunchFlagNewGlobals | sysAppLaunchFlagUIApp)) ==
         (sysAppLaunchFlagNewGlobals | sysAppLaunchFlagUIApp)) {
-      FrmAlert (RomIncompatibleAlert);
+      FrmAlert(RomIncompatibleAlert);
       if (romVersion < 0x03000000)
         AppLaunchWithCommand(sysFileCDefaultApp, sysAppLaunchCmdNormalLaunch, NULL);
     }
     return (sysErrRomIncompatible);
   }
   return 0;
+}
+
+
+/***********************************************************************
+ *
+ * FUNCTION:  WriteStatus
+ *
+ * DESCRIPTION: Convenience routine to print the status line
+ *
+ * PARAMETERS:  status -- string to display
+ *
+ * RETURNED:  nothing.
+ *
+ ***********************************************************************/
+static void WriteStatus(CharPtr status)
+{
+  RectangleType r = {statusOriginX, statusOriginY, statusWidth, statusHeight};
+  WinEraseRectangle(&r, 0);
+  WinDrawChars(status, StrLen(status), statusOriginX, statusOriginY);
+}
+
+
+/***********************************************************************
+ *
+ * FUNCTION:  WriteRemains
+ *
+ * DESCRIPTION: Convenience routine for the most common status line
+ *
+ * PARAMETERS:  none
+ *
+ * RETURNED:  nothing.
+ *
+ ***********************************************************************/
+static void WriteRemains(void)
+{
+  char tmpStr[20];
+  Int remains = maxRows - numPlaced;
+
+  if (remains > 1) {
+    StrPrintF(tmpStr, "%d queens remaining", remains);
+    WriteStatus(tmpStr);
+  } else if (remains) {
+    WriteStatus("One queen left");
+  } else {
+    WriteStatus("Click check to verify");
+  }
 }
 
 
@@ -178,24 +226,28 @@ static void DrawCell(WinHandle dstWinH, Int row, Int col)
   Int       bitmapID = 0;
   Int       bitmapIndex = 0;
   Int       x, y;
+  Boolean   whiteBack;
 
   // Figure out where it goes
   x = gridOriginX + col * bitmapWidth;
   y = gridOriginY + row * bitmapHeight;
 
+  // Figure out the background color
+  whiteBack = whiteUpperLeft ? row+col & 1 : !(row+col & 1);
+
   // Determine which bitmap to use
   if (blinkGrid[row][col]) {
-    if (row+col & 1)
+    if (whiteBack)
       bitmapIndex = queenwhiterevGraphic;
     else
       bitmapIndex = queenblackrevGraphic;
   } else if (curGrid[row][col]) {
-    if (row+col & 1)
+    if (whiteBack)
       bitmapIndex = queenwhiteGraphic;
     else
       bitmapIndex = queenblackGraphic;
   } else {
-    if (row+col & 1)
+    if (whiteBack)
       bitmapIndex = allwhiteGraphic;
     else
       bitmapIndex = allblackGraphic;
@@ -283,6 +335,8 @@ static void RotateLeft(void)
   // optimization
   Int           maxIndex = maxRows - 1;
 
+  whiteUpperLeft = !whiteUpperLeft; // all rotations change board
+
   // assumes square board, so only use maxRows
   for (i=0; i < maxRows/2; i++) {
     for (j=i; j < maxIndex-i; j++) {
@@ -315,6 +369,8 @@ static void RotateRight(void)
   // optimization
   Int           maxIndex = maxRows - 1;
 
+  whiteUpperLeft = !whiteUpperLeft; // all rotations change board
+
   // assumes square board, so only use maxRows
   for (i=0; i < maxRows/2; i++) {
     for (j=i; j < maxIndex-i; j++) {
@@ -344,6 +400,8 @@ static void FlipVert(void)
   Int           i, j;
   Boolean       temp;
 
+  whiteUpperLeft = !whiteUpperLeft; // all rotations change board
+
   for (j=0; j < maxCols; j++) {
     for (i=0; i < maxRows/2; i++) {
       temp = curGrid[i][j];
@@ -370,6 +428,8 @@ static void FlipHoriz(void)
   Int           i, j;
   Boolean       temp;
 
+  whiteUpperLeft = !whiteUpperLeft; // all rotations change board
+
   for (i=0; i < maxRows; i++) {
     for (j=0; j < maxCols/2; j++) {
       temp = curGrid[i][j];
@@ -382,17 +442,36 @@ static void FlipHoriz(void)
 
 /***********************************************************************
  *
- * FUNCTION:     CheckSolution
+ * FUNCTION:     CleanDraw
  *
- * DESCRIPTION:  Check the solution, putting up a congratulations dialog
- *               if solved, or reversing the queens that can attack
+ * DESCRIPTION:  Utility function to clean up and redraw grid
  *
  * PARAMETERS:  none
  *
  * RETURNED:  nothing
  *
  ***********************************************************************/
-static void CheckSolution(void)
+static void CleanDraw(void)
+{
+  MemSet(blinkGrid, sizeof(blinkGrid), 0);
+  numReversed = 0;
+  WriteRemains();
+  DrawGrid();
+}
+
+/***********************************************************************
+ *
+ * FUNCTION:     CountAttacks
+ *
+ * DESCRIPTION:  Check the solution, counting attacking queens and
+ *               setting blinkGrid appropriately
+ *
+ * PARAMETERS:  none
+ *
+ * RETURNED:  nothing
+ *
+ ***********************************************************************/
+static void CountAttacks(void)
 {
   Int           i, j, count;
 
@@ -461,20 +540,51 @@ static void CheckSolution(void)
   } 
 
   // see if we found any attacks, and count the queens
-  count = 0;
+  numReversed = 0;
   for (j=0; j < maxCols; j++) {
     for (i=0; i < maxRows; i++) {
       if (blinkGrid[i][j])
-        someReversed = true;
-      if (curGrid[i][j])
-        count++;
+        numReversed++;
     }
   }
+}
 
-  if (someReversed)
+
+/***********************************************************************
+ *
+ * FUNCTION:     CheckSolution
+ *
+ * DESCRIPTION:  Check the solution, putting up a congratulations dialog
+ *               if solved, or reversing the queens that can attack
+ *
+ * PARAMETERS:  none
+ *
+ * RETURNED:  nothing
+ *
+ ***********************************************************************/
+static void CheckSolution(void)
+{
+  char tmpStr[20];
+  
+  if (!numReversed) // don't bother if already counted
+    CountAttacks();
+
+  if (numReversed) {
     DrawGrid();
-  else if (count == maxRows)
+    StrPrintF(tmpStr, "%d queens can attack", numReversed);
+    WriteStatus(tmpStr);
+  } else if (numPlaced == maxRows) {
+    WriteStatus("Solved!");
     FrmAlert(SuccessAlert);
+  } else if (numPlaced < 2) {
+    WriteStatus("Nothing to check");
+  } else if (numPlaced < 5) {
+    WriteStatus("Looking good so far");
+  } else if (numPlaced < 7) {
+    WriteStatus("You're almost there");
+  } else {
+    WriteStatus("One more and you win");
+  }
 }
 
 
@@ -542,7 +652,7 @@ static Boolean FindRecurse(Int row)
     }
   }
   findGrid[row] = maxCols;
-
+  
   // didn't find any
   return false;
 }
@@ -564,8 +674,13 @@ static void FindSolution(void)
   Int           i, j;
   Boolean       found;
 
-  CheckSolution();
-  if (someReversed)
+  if (!numReversed)
+    CountAttacks();
+  if (numReversed) {
+    CheckSolution();
+    return;
+  }
+  if (numPlaced == maxRows) // puzzle already completed
     return;
 
   // build findGrid
@@ -578,13 +693,15 @@ static void FindSolution(void)
   }
 
   for (i=0; i < maxRows && findGrid[i] < maxCols; i++) ;
-  if (i == maxRows) // puzzle already completed
+  if (i == maxRows) // puzzle already completed - defensive
     return;
 
   found = FindRecurse(i);
   if (found) {
     for (i=0; i < maxRows; i++)
       curGrid[i][findGrid[i]] = true;
+    numPlaced = maxRows;
+    WriteStatus("Solved!");
     DrawGrid();
   } else {
     FrmAlert(NoSolnsAlert);
@@ -627,16 +744,23 @@ static Boolean HandlePenDown(Int penX, Int penY)
   col = x / bitmapWidth;
   row = y / bitmapHeight;
 
+  // check for too many queens
+  if ((numPlaced == maxRows) && !curGrid[row][col]) {
+    FrmAlert(NoQueensAlert);
+    return true;
+  }
+
   // turn on or off as appropriate
   curGrid[row][col] = !curGrid[row][col];
+  numPlaced += (curGrid[row][col]) ? 1 : -1;
 
-  // If we had some reversed queens, redraw the board
-  if (someReversed) {
-    MemSet(blinkGrid, sizeof(blinkGrid), 0);
-    someReversed = false;
-    DrawGrid();
-  } else 
+  // If there were some reversed queens, do a clean redraw
+  if (numReversed) {
+    CleanDraw();
+  } else { // slight optimization
     DrawCell(0, row, col);
+    WriteRemains();
+  }
   
   return true;
 }
@@ -698,7 +822,35 @@ static Boolean MainFormHandleEvent (EventPtr event)
   if (event->eType == ctlSelectEvent) {
     switch (event->data.ctlSelect.controlID) {
 
-      // Main form - buttons along the bottom
+      // buttons along the side, both forms
+      case MainClearButton:
+        MemSet(curGrid, sizeof(curGrid), 0);
+        numPlaced = 0;
+        CleanDraw();
+        handled = true;
+        break;
+       
+      case MainRotLeftButton:
+        RotateLeft();
+        CleanDraw();
+        handled = true;
+        break;
+      case MainRotRightButton:
+        RotateRight();
+        CleanDraw();
+        handled = true;
+        break;
+      case MainFlipVertButton:
+        FlipVert();
+        CleanDraw();
+        handled = true;
+        break;
+      case MainFlipHorizButton:
+        FlipHoriz();
+        CleanDraw();
+        handled = true;
+        break;
+
       case MainCheckButton:
         CheckSolution();
         handled = true;
@@ -707,38 +859,7 @@ static Boolean MainFormHandleEvent (EventPtr event)
         FindSolution();
         handled = true;
         break;
-      case MainBrowseButton:
-        // TODO
-        handled = true;
-        break;
 
-      // buttons along the side, both forms
-      case MainRotLeftButton:
-        RotateLeft();
-        DrawGrid();
-        handled = true;
-        break;
-      case MainRotRightButton:
-        RotateRight();
-        DrawGrid();
-        handled = true;
-        break;
-      case MainFlipVertButton:
-        FlipVert();
-        DrawGrid();
-        handled = true;
-        break;
-      case MainFlipHorizButton:
-        FlipHoriz();
-        DrawGrid();
-        handled = true;
-        break;
-      case MainClearButton:
-        MemSet(curGrid, sizeof(curGrid), 0);
-        DrawGrid();
-        handled = true;
-        break;
-       
       default:
         break;
     }
@@ -760,7 +881,7 @@ static Boolean MainFormHandleEvent (EventPtr event)
 
   else if ((event->eType == frmUpdateEvent) || (event->eType == frmOpenEvent)) {
     FrmDrawForm(FrmGetActiveForm());
-    DrawGrid();
+    CleanDraw();
     handled = true;
   }
     
@@ -863,10 +984,13 @@ static void LoadGrid(void)
                                     sizeof(Prefs));
   if (found && Prefs.signature == E8queensPrefSignature) {
     MemMove(curGrid, Prefs.grid, sizeof(curGrid));
+    numPlaced = Prefs.numPlaced;
+    whiteUpperLeft = Prefs.whiteUpperLeft;
   } else {
     MemSet(curGrid, sizeof(curGrid), 0);
+    numPlaced = 0;
+    whiteUpperLeft = false;
   }
-  MemSet(blinkGrid, sizeof(blinkGrid), 0);
 }
 
 
@@ -886,6 +1010,8 @@ static void SaveGrid(void)
 {
   Prefs.signature = E8queensPrefSignature;
   MemMove(Prefs.grid, curGrid, sizeof(curGrid));
+  Prefs.numPlaced = numPlaced;
+  Prefs.whiteUpperLeft = whiteUpperLeft;
 
   // Save our preferences to the Preferences database
   PrefSetAppPreferencesV10(appFileCreator, appVersionNum, &Prefs, sizeof(Prefs));

@@ -7,7 +7,7 @@
  Ugly lawyer stuff:   
  BASSWOOD ASSOCIATES MAKES NO REPRESENTATIONS OR WARRANTIES THAT THE SOFTWARE IS
  FREE OF ERRORS OR THAT THE SOFTWARE IS SUITABLE FOR YOUR USE.  THE SOFTWARE IS
- PROVIDED ON AN "AS IS" BASIS.  3COM MAKES NO WARRANTIES, TERMS OR CONDITIONS, 
+ PROVIDED ON AN "AS IS" BASIS.  BASSWOOD MAKES NO WARRANTIES, TERMS OR CONDITIONS, 
  EXPRESS OR IMPLIED, EITHER IN FACT OR BY OPERATION OF LAW, STATUTORY OR OTHERWISE,
  INCLUDING WARRANTIES, TERMS, OR CONDITIONS OF MERCHANTABILITY, FITNESS FOR A
  PARTICULAR PURPOSE, AND SATISFACTORY QUALITY.
@@ -25,6 +25,7 @@
  * PROJECT:  8queens
  * FILE:     8queens.h
  * AUTHOR:   Tom Shields, Dec 15, 1998
+ * $Id: 8queens.h,v 1.2 1999/01/06 11:09:47 ts Exp $
  *
  * DECLARER: 8queens
  *
@@ -42,9 +43,8 @@
  *
  ***********************************************************************/
 #define appFileCreator            '8qns'
-#define appVersionNum              0x01
+#define appVersionNum              0x02
 #define appPrefID                  0x00
-#define appPrefVersionNum          0x01
 
 
 // Define the minimum OS version we support
@@ -59,6 +59,11 @@
 
 #define gridOriginX     1
 #define gridOriginY     17
+
+#define statusOriginX   2
+#define statusOriginY   147
+#define statusWidth     130
+#define statusHeight    12
 
 /***********************************************************************
  *
@@ -75,6 +80,8 @@ typedef DWord       PackedGridType;
 typedef struct {
   DWord             signature;  // signature for pref resource validation
   GridType          grid;       // saved grid info
+  Int               numPlaced;  // number of queens in the grid
+  Boolean           whiteUpperLeft;  // is the upper left square white?
 } E8queensPrefType;
 
 #endif  // __8QUEENS_H__
