@@ -25,7 +25,7 @@
  * PROJECT:  8queens
  * FILE:     8queens.h
  * AUTHOR:   Tom Shields, Dec 15, 1998
- * $Id: 8queens.h,v 1.2 1999/01/06 11:09:47 ts Exp $
+ * $Id: 8queens.h,v 1.3 1999/01/13 09:43:26 ts Exp $
  *
  * DECLARER: 8queens
  *
@@ -65,14 +65,34 @@
 #define statusWidth     130
 #define statusHeight    12
 
+// maximum solutions to allocate - empirically determined
+#define maxSolutions    93
+
 /***********************************************************************
  *
  *   Internal Structures
  *
  ***********************************************************************/
 typedef Boolean     GridType[maxRows][maxCols];
-typedef Int         OpenGridType[maxRows];
+typedef UInt        OpenGridType[maxRows];
 typedef DWord       PackedGridType;
+
+// These are pretty ugly...
+#define PackFind(s) \
+s = (ULong)findGrid[0] << 28 | (ULong)findGrid[1] << 24 | \
+    (ULong)findGrid[2] << 20 | (ULong)findGrid[3] << 16 | \
+           findGrid[4] << 12 |        findGrid[5] << 8  | \
+           findGrid[6] << 4  |        findGrid[7]
+#define UnpackFind(s) do { \
+findGrid[0] = (s >> 28); \
+findGrid[1] = (s >> 24) & 15; \
+findGrid[2] = (s >> 20) & 15; \
+findGrid[3] = (s >> 16) & 15; \
+findGrid[4] = (s >> 12) & 15; \
+findGrid[5] = (s >> 8)  & 15; \
+findGrid[6] = (s >> 4)  & 15; \
+findGrid[7] = s & 15; \
+} while (0)
 
 // prefs stuff
 #define E8queensPrefSignature   '8qns'

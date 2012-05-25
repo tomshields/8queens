@@ -12,8 +12,8 @@
  INCLUDING WARRANTIES, TERMS, OR CONDITIONS OF MERCHANTABILITY, FITNESS FOR A
  PARTICULAR PURPOSE, AND SATISFACTORY QUALITY.
 
- TO THE FULL EXTENT ALLOWED BY LAW, BASSWOOD ASSOCIATES ALSO EXCLUDES FOR ITSELF AND
- ITS SUPPLIERS ANY LIABILITY, WHETHER BASED IN CONTRACT OR TORT (INCLUDING 
+ TO THE FULL EXTENT ALLOWED BY LAW, BASSWOOD ASSOCIATES ALSO EXCLUDES FOR ITSELF
+ AND ITS SUPPLIERS ANY LIABILITY, WHETHER BASED IN CONTRACT OR TORT (INCLUDING 
  NEGLIGENCE), FOR DIRECT, INCIDENTAL, CONSEQUENTIAL, INDIRECT, SPECIAL, OR PUNITIVE 
  DAMAGES OF ANY KIND, OR FOR LOSS OF REVENUE OR PROFITS, LOSS OF BUSINESS, LOSS OF
  INFORMATION OR DATA, OR OTHER FINANCIAL LOSS ARISING OUT OF OR IN CONNECTION WITH
@@ -25,7 +25,7 @@
  * PROJECT:  8queens
  * FILE:     8queens.c
  * AUTHOR:   Tom Shields, Dec 15, 1998
- * $Id: 8queens.c,v 1.3 1999/01/06 11:43:18 ts Exp $
+ * $Id: 8queens.c,v 1.4 1999/01/13 09:43:25 ts Exp $
  *
  * DECLARER: 8queens
  *
@@ -55,8 +55,13 @@
  ***********************************************************************/
 static GridType         curGrid, blinkGrid;
 static OpenGridType     findGrid;
-Int                     numPlaced, numReversed;
-Boolean                 whiteUpperLeft;
+static Int              numPlaced, numReversed;
+static Boolean          whiteUpperLeft;
+static VoidHand         allSolutionsHandle;
+static PackedGridType   *allSolutions;  // only valid when locked!
+static PackedGridType   solutionMask, currFixed;
+static Int              numSolutions, currSolution;
+static Boolean          browseMode;
 
 static WinHandle  OffscreenGridWinH = 0;
 static WinHandle  OffscreenBitmapWinH = 0;
@@ -64,8 +69,10 @@ static WinHandle  OffscreenBitmapWinH = 0;
 typedef enum gType {
   queenwhiteGraphic = 0,
   queenwhiterevGraphic,
+  queenwhitefixedGraphic,
   queenblackGraphic,
   queenblackrevGraphic,
+  queenblackfixedGraphic,
   allwhiteGraphic,
   allblackGraphic,
   lastGraphic
@@ -74,8 +81,10 @@ typedef enum gType {
 static Int        GraphicsTable[] = {
   queenwhiteBitmap,
   queenwhiterevBitmap,
+  queenwhitefixedBitmap,
   queenblackBitmap,
   queenblackrevBitmap,
+  queenblackfixedBitmap,
   allwhiteBitmap,
   allblackBitmap,
 };
@@ -157,16 +166,21 @@ static void WriteStatus(CharPtr status)
  ***********************************************************************/
 static void WriteRemains(void)
 {
-  char tmpStr[20];
+  char tmpStr[30];
   Int remains = maxRows - numPlaced;
 
-  if (remains > 1) {
-    StrPrintF(tmpStr, "%d queens remaining", remains);
+  if (browseMode) {
+    StrPrintF(tmpStr, "Displaying solution %d of %d", currSolution+1, numSolutions);
     WriteStatus(tmpStr);
-  } else if (remains) {
-    WriteStatus("One queen left");
   } else {
-    WriteStatus("Click check to verify");
+    if (remains > 1) {
+      StrPrintF(tmpStr, "%d queens remaining", remains);
+      WriteStatus(tmpStr);
+    } else if (remains) {
+      WriteStatus("One queen left");
+    } else {
+      WriteStatus("Click check to verify");
+    }
   }
 }
 
@@ -236,21 +250,40 @@ static void DrawCell(WinHandle dstWinH, Int row, Int col)
   whiteBack = whiteUpperLeft ? row+col & 1 : !(row+col & 1);
 
   // Determine which bitmap to use
-  if (blinkGrid[row][col]) {
-    if (whiteBack)
-      bitmapIndex = queenwhiterevGraphic;
-    else
-      bitmapIndex = queenblackrevGraphic;
-  } else if (curGrid[row][col]) {
-    if (whiteBack)
-      bitmapIndex = queenwhiteGraphic;
-    else
-      bitmapIndex = queenblackGraphic;
+  if (browseMode) {
+    if (curGrid[row][col]) {
+      if (whiteBack)
+        bitmapIndex = queenwhitefixedGraphic;
+      else
+        bitmapIndex = queenblackfixedGraphic;
+    } else if (findGrid[row] == col) {
+      if (whiteBack)
+        bitmapIndex = queenwhiteGraphic;
+      else
+        bitmapIndex = queenblackGraphic;
+    } else {
+      if (whiteBack)
+        bitmapIndex = allwhiteGraphic;
+      else
+        bitmapIndex = allblackGraphic;
+    }
   } else {
-    if (whiteBack)
-      bitmapIndex = allwhiteGraphic;
-    else
-      bitmapIndex = allblackGraphic;
+    if (blinkGrid[row][col]) {
+      if (whiteBack)
+        bitmapIndex = queenwhiterevGraphic;
+      else
+        bitmapIndex = queenblackrevGraphic;
+    } else if (curGrid[row][col]) {
+      if (whiteBack)
+        bitmapIndex = queenwhiteGraphic;
+      else
+        bitmapIndex = queenblackGraphic;
+    } else {
+      if (whiteBack)
+        bitmapIndex = allwhiteGraphic;
+      else
+        bitmapIndex = allblackGraphic;
+    }
   }
   
   // Draw the bitmap
@@ -446,16 +479,19 @@ static void FlipHoriz(void)
  *
  * DESCRIPTION:  Utility function to clean up and redraw grid
  *
- * PARAMETERS:  none
+ * PARAMETERS:  message to write if WriteRemains not called
  *
  * RETURNED:  nothing
  *
  ***********************************************************************/
-static void CleanDraw(void)
+static void CleanDraw(CharPtr msg)
 {
   MemSet(blinkGrid, sizeof(blinkGrid), 0);
   numReversed = 0;
-  WriteRemains();
+  if (msg)
+    WriteStatus(msg);
+  else
+    WriteRemains();
   DrawGrid();
 }
 
@@ -590,33 +626,49 @@ static void CheckSolution(void)
 
 /***********************************************************************
  *
- * FUNCTION:     FindCheck
+ * FUNCTION:     DisplayFind
  *
- * DESCRIPTION:  Check the findGrid for attacks
+ * DESCRIPTION:  Find the solution in findGrid in the allSolutions array
+ *               Also do a bunch of convenience stuff
  *
- * PARAMETERS:  none
+ * PARAMETERS:  message to display
  *
- * RETURNED:  Boolean -- true if no attacks found
+ * RETURNED:  nothing
  *
  ***********************************************************************/
-static Boolean FindCheck(void)
+static void DisplayFind(CharPtr msg)
 {
-  Int i, j;
-  for (i=0; i < maxRows; i++) {
-    if (findGrid[i] == maxCols)
-      continue;
-    for (j=i+1; j < maxCols; j++) {
-      if (findGrid[j] == maxCols)
-        continue;
-      if (findGrid[i] == findGrid[j])
-        return false;
-      if (i+findGrid[i] == j+findGrid[j])
-        return false;
-      if (i-findGrid[i] == j-findGrid[j])
-        return false;
+  Int top, bot, i, row, col;
+  PackedGridType soln;
+  
+  PackFind(soln);
+  allSolutions = MemHandleLock(allSolutionsHandle);  
+
+  // binary search for the solution
+  top = 0; bot = numSolutions;
+  while (top < bot) {
+    i = (top + bot) / 2;
+    if (soln == allSolutions[i])
+      break;
+    else if (soln < allSolutions[i])
+      bot = i-1;
+    else
+      top = i+1;
+  }
+  MemHandleUnlock(allSolutionsHandle);
+
+  // re-make solution mask
+  solutionMask = 0; currFixed = 0;
+  for (row=0; row < maxRows; row++) {
+    for (col=0; (col < maxCols) && !curGrid[row][col]; col++) ;
+    if (col < maxCols) {
+      solutionMask |= (ULong)0xF << ((maxRows-row-1)*4);
+      currFixed |= (ULong)col << ((maxRows-row-1)*4);
     }
   }
-  return true;
+
+  currSolution = i; // assumes we found it - it better be there
+  CleanDraw(msg);
 }
 
 
@@ -628,84 +680,136 @@ static Boolean FindCheck(void)
  *
  * PARAMETERS:  row  -- the row to find candidates for
  *
- * RETURNED:  Boolean -- true if a solution is found
+ * RETURNED:  nothing
  *
  ***********************************************************************/
-static Boolean FindRecurse(Int row)
+static void FindRecurse(Int row)
 {
-  Int col;
+  Int col, i;
 
-  // check to see if we're done
-  if (row >= maxRows)
-    return true;
-
-  // if there's already a queen in this row, keep spinning
-  if (findGrid[row] < maxCols)
-    return FindRecurse(row+1);
-
-  // otherwise, try to find a candidate
+  // check all possible spots in this row
   for (col=0; col < maxCols; col++) {
-    findGrid[row] = col;
-    if (FindCheck()) {
-      if (FindRecurse(row+1))
-        return true;
+
+    // check attacks
+    for (i=0; i < row; i++) {
+      if ((findGrid[i] == col) || 
+          (i+findGrid[i] == row+col) ||
+          (i-findGrid[i] == row-col))
+        break;
+    }
+
+    if (i == row) {
+      // this spot works so far
+      findGrid[row] = col;
+
+      if (row == maxRows-1) {  // we got a solution, so store it
+        PackFind(allSolutions[numSolutions]);
+        numSolutions++;
+      } else // keep going
+        FindRecurse(row+1);
     }
   }
-  findGrid[row] = maxCols;
-  
-  // didn't find any
-  return false;
 }
 
 
 /***********************************************************************
  *
- * FUNCTION:     FindSolution
+ * FUNCTION:     FindAllSolutions
  *
- * DESCRIPTION:  Find a solution, given some queens already placed
+ * DESCRIPTION:  Find all possible solutions
  *
  * PARAMETERS:  none
  *
- * RETURNED:  nothing
+ * RETURNED:  true on success
  *
  ***********************************************************************/
-static void FindSolution(void)
+static Boolean FindAllSolutions(void)
 {
-  Int           i, j;
-  Boolean       found;
+  Int i;
+  for (i=0; i<maxRows; i++)
+    findGrid[i] = maxCols;
+  // check if already generated
+  if (allSolutionsHandle)
+    return true;
+
+  // allocate memory
+  allSolutionsHandle = MemHandleNew(maxSolutions * sizeof(PackedGridType));
+  if (!allSolutionsHandle) {
+    FrmAlert(NoMemAlert);
+    return false;
+  }
+
+  numSolutions = 0;
+  allSolutions = MemHandleLock(allSolutionsHandle);  
+
+  FindRecurse(0);
+
+  MemHandleUnlock(allSolutionsHandle);
+
+  return true;
+}
+
+
+/***********************************************************************
+ *
+ * FUNCTION:     FindMatches
+ *
+ * DESCRIPTION:  Find matching solutions
+ *
+ * PARAMETERS:  none
+ *
+ * RETURNED:  true if some matches found
+ *
+ ***********************************************************************/
+static Boolean FindMatches(void)
+{
+  Int row, col, i;
+  Int matches;
 
   if (!numReversed)
     CountAttacks();
   if (numReversed) {
     CheckSolution();
-    return;
+    return false;
   }
-  if (numPlaced == maxRows) // puzzle already completed
-    return;
 
-  // build findGrid
-  for (i=0; i < maxRows; i++) {
-    findGrid[i] = maxCols;
-    for (j=0; j < maxCols; j++) {
-      if (curGrid[i][j])
-        findGrid[i] = j;
+  if (!FindAllSolutions())
+    return false;
+
+  // make solution mask
+  solutionMask = 0; currFixed = 0;
+  for (row=0; row < maxRows; row++) {
+    for (col=0; (col < maxCols) && !curGrid[row][col]; col++) ;
+    if (col < maxCols) {
+      solutionMask |= (ULong)0xF << ((maxRows-row-1)*4);
+      currFixed |= (ULong)col << ((maxRows-row-1)*4);
     }
   }
 
-  for (i=0; i < maxRows && findGrid[i] < maxCols; i++) ;
-  if (i == maxRows) // puzzle already completed - defensive
-    return;
-
-  found = FindRecurse(i);
-  if (found) {
-    for (i=0; i < maxRows; i++)
-      curGrid[i][findGrid[i]] = true;
-    numPlaced = maxRows;
-    WriteStatus("Solved!");
-    DrawGrid();
-  } else {
-    FrmAlert(NoSolnsAlert);
+  // count matching solutions
+  matches = 0; currSolution = 0;
+  allSolutions = MemHandleLock(allSolutionsHandle);  
+  for (i=0; i < numSolutions; i++) {
+    if ((allSolutions[i] & solutionMask) == currFixed) {
+      if (!matches)
+        currSolution = i;
+      matches++;
+    }
   }
+  UnpackFind(allSolutions[currSolution]);
+  MemHandleUnlock(allSolutionsHandle);
+
+  // display results
+  if (matches == 0) {
+    FrmAlert(NoSolnsAlert);
+    return false;
+  } else if (currFixed) { // only display if some queens placed
+    char tmp1[8], tmp2[8];
+    StrIToA(tmp1, matches);
+    StrIToA(tmp2, numSolutions);
+    FrmCustomAlert(FoundAlert, tmp1, tmp2, NULL);
+  }
+  return true;
 }
 
 
@@ -756,7 +860,7 @@ static Boolean HandlePenDown(Int penX, Int penY)
 
   // If there were some reversed queens, do a clean redraw
   if (numReversed) {
-    CleanDraw();
+    CleanDraw(NULL);
   } else { // slight optimization
     DrawCell(0, row, col);
     WriteRemains();
@@ -787,7 +891,10 @@ static Boolean MainFormDoCommand (Word command)
   switch (command)
     {
     case MainOptionsHelp:
-      FrmHelp(SolveHelpString);
+      if (browseMode)
+        FrmHelp(BrowseHelpString);
+      else
+        FrmHelp(SolveHelpString);
       handled = true;
       break;
       
@@ -822,41 +929,42 @@ static Boolean MainFormHandleEvent (EventPtr event)
   if (event->eType == ctlSelectEvent) {
     switch (event->data.ctlSelect.controlID) {
 
-      // buttons along the side, both forms
+      // buttons along the side
+      case MainCheckButton:
+        CheckSolution();
+        handled = true;
+        break;
       case MainClearButton:
         MemSet(curGrid, sizeof(curGrid), 0);
         numPlaced = 0;
-        CleanDraw();
+        CleanDraw("Board cleared");
         handled = true;
         break;
        
       case MainRotLeftButton:
         RotateLeft();
-        CleanDraw();
+        CleanDraw("Rotated counterclockwise");
         handled = true;
         break;
       case MainRotRightButton:
         RotateRight();
-        CleanDraw();
+        CleanDraw("Rotated clockwise");
         handled = true;
         break;
       case MainFlipVertButton:
         FlipVert();
-        CleanDraw();
+        CleanDraw("Turned upside down");
         handled = true;
         break;
       case MainFlipHorizButton:
         FlipHoriz();
-        CleanDraw();
+        CleanDraw("Mirrored");
         handled = true;
         break;
 
-      case MainCheckButton:
-        CheckSolution();
-        handled = true;
-        break;
       case MainFindButton:
-        FindSolution();
+        if (FindMatches())
+          FrmGotoForm(BrowseForm);
         handled = true;
         break;
 
@@ -880,11 +988,128 @@ static Boolean MainFormHandleEvent (EventPtr event)
   }
 
   else if ((event->eType == frmUpdateEvent) || (event->eType == frmOpenEvent)) {
+    browseMode = false;
     FrmDrawForm(FrmGetActiveForm());
-    CleanDraw();
+    CleanDraw(NULL);
     handled = true;
   }
     
+  return (handled);
+}
+
+
+/***********************************************************************
+ *
+ * FUNCTION:    BrowseFormHandleEvent
+ *
+ * DESCRIPTION: This routine is the event handler for the "Browse View"
+ *
+ * PARAMETERS:  event  - a pointer to an EventType structure
+ *
+ * RETURNED:    true if the event has been handled and should not be passed
+ *              to a higher level handler.
+ *
+ ***********************************************************************/
+static Boolean BrowseFormHandleEvent (EventPtr event)
+{
+  Boolean handled = false;
+  OpenGridType tempGrid;
+  Int i, tmp;
+
+  if (event->eType == ctlSelectEvent) {
+    switch (event->data.ctlSelect.controlID) {
+
+      // buttons along the side
+      case BrowseNextButton:
+        allSolutions = MemHandleLock(allSolutionsHandle);  
+        do { // assumes there IS a solution - if we're here, there is
+          currSolution++;
+          if (currSolution >= numSolutions)
+            currSolution = 0;
+        } while ((allSolutions[currSolution] & solutionMask) != currFixed);
+        UnpackFind(allSolutions[currSolution]);
+        MemHandleUnlock(allSolutionsHandle);
+        CleanDraw(NULL);
+        handled = true;
+        break;
+      case BrowsePrevButton:
+        allSolutions = MemHandleLock(allSolutionsHandle);  
+        do { // assumes there IS a solution - if we're here, there is
+          currSolution--;
+          if (currSolution < 0)
+            currSolution = numSolutions - 1;
+        } while ((allSolutions[currSolution] & solutionMask) != currFixed);
+        UnpackFind(allSolutions[currSolution]);
+        MemHandleUnlock(allSolutionsHandle);
+        CleanDraw(NULL);
+        handled = true;
+        break;
+       
+      case BrowseRotLeftButton:
+        RotateLeft();
+        for (i=0; i < maxRows; i++)
+          tempGrid[maxRows-findGrid[i]-1] = i;
+        for (i=0; i < maxRows; i++)
+          findGrid[i] = tempGrid[i];
+        DisplayFind(NULL);
+        handled = true;
+        break;
+      case BrowseRotRightButton:
+        RotateRight();
+        for (i=0; i < maxRows; i++)
+          tempGrid[findGrid[i]] = maxRows-i-1;
+        for (i=0; i < maxRows; i++)
+          findGrid[i] = tempGrid[i];
+        DisplayFind(NULL);
+        handled = true;
+        break;
+      case BrowseFlipVertButton:
+        FlipVert();
+        for (i=0; i < maxRows/2; i++) {
+          tmp = findGrid[i];
+          findGrid[i] = findGrid[maxRows-i-1];
+          findGrid[maxRows-i-1] = tmp;
+        }
+        DisplayFind(NULL);
+        handled = true;
+        break;
+      case BrowseFlipHorizButton:
+        FlipHoriz();
+        for (i=0; i < maxRows; i++)
+          findGrid[i] = maxRows-findGrid[i]-1;
+        DisplayFind(NULL);
+        handled = true;
+        break;
+
+      case BrowseSolveButton:
+        FrmGotoForm(MainForm);
+        handled = true;
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  else if (event->eType == penDownEvent) {
+    if ((KeyCurrentState() & (keyBitPageUp | keyBitPageDown)) &&
+        (FrmPointInTitle(FrmGetActiveForm(), event->screenX, event->screenY))) {
+      FrmAlert(EggAlert);
+      handled = true;
+    }
+  }
+  
+  else if (event->eType == menuEvent) {
+    handled = MainFormDoCommand(event->data.menu.itemID);
+  }
+
+  else if ((event->eType == frmUpdateEvent) || (event->eType == frmOpenEvent)) {
+    browseMode = true;
+    FrmDrawForm(FrmGetActiveForm());
+    CleanDraw(NULL);
+    handled = true;
+  }
+
   return (handled);
 }
 
@@ -922,6 +1147,10 @@ static Boolean AppHandleEvent( EventPtr eventP)
       {
       case MainForm:
         FrmSetEventHandler(frmP, MainFormHandleEvent);
+        break;
+
+      case BrowseForm:
+        FrmSetEventHandler(frmP, BrowseFormHandleEvent);
         break;
 
       default:
@@ -991,6 +1220,7 @@ static void LoadGrid(void)
     numPlaced = 0;
     whiteUpperLeft = false;
   }
+  allSolutionsHandle = 0;
 }
 
 
@@ -1092,6 +1322,8 @@ static void StopApplication (void)
     WinDeleteWindow(OffscreenGridWinH, false);
     OffscreenGridWinH = 0;
   }
+
+  // The solutions chunk is freed automatically
 }
 
 
